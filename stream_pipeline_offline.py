@@ -366,7 +366,11 @@ class StreamSDK:
         q = self.queues[queue_name]
         try:
             q.put(item, timeout=timeout)
-            self.log_queue_operation(queue_name, "put", type(item).__name__)
+            item_type = type(item).__name__
+            # Handle numpy arrays specially to avoid ambiguity errors
+            if hasattr(item, '__len__') and hasattr(item, '__array__'):
+                item_type = f"ndarray_{item.shape}"
+            self.log_queue_operation(queue_name, "put", item_type)
             return True
         except queue.Full:
             self.log_queue_operation(queue_name, "full", type(item).__name__)
@@ -383,7 +387,11 @@ class StreamSDK:
         q = self.queues[queue_name]
         try:
             item = q.get(timeout=timeout)
-            self.log_queue_operation(queue_name, "get", type(item).__name__ if item else "None")
+            item_type = type(item).__name__ if item is not None else "None"
+            # Handle numpy arrays specially to avoid ambiguity errors
+            if hasattr(item, '__len__') and hasattr(item, '__array__'):
+                item_type = f"ndarray_{item.shape}"
+            self.log_queue_operation(queue_name, "get", item_type)
             return item
         except queue.Empty:
             self.log_queue_operation(queue_name, "timeout")
