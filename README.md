@@ -8,9 +8,9 @@ Installation:
 
 - start from Nvidia NGC 25.03 . It includes almost all required libraries with proper versions. ( https://docs.nvidia.com/deeplearning/frameworks/support-matrix/index.html )
 - download or generate ./checkpoints/ditto_trt_blackwell/
-- pip install imageio==2.37.2
+- apt install ffmpeg
+- pip install imageio[ffmpeg]==2.37.2
 - pip install scikit_image==0.25.2
-- 
 
 <hr/>
 <hr/>
