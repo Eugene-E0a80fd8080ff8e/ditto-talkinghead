@@ -424,7 +424,9 @@ class StreamSDK:
                 
             try:
                 res_frame_rgb = item
-                self.writer(res_frame_rgb, fmt="rgb")
+                # VideoWriterByImageIO expects image data, not format string
+                # The fmt parameter is used in __call__ method, not write()
+                self.writer(res_frame_rgb)
                 self.writer_pbar.update()
                 if self.debug_mode:
                     self.logger.debug("Writer processed frame successfully")
