@@ -1,3 +1,21 @@
+
+
+This is a fork of https://github.com/antgroup/ditto-talkinghead .
+
+I work towards adapting it to TensorRT 10+
+
+Installation:
+
+- start from Nvidia NGC 25.03 . It includes almost all required libraries with proper versions. ( https://docs.nvidia.com/deeplearning/frameworks/support-matrix/index.html )
+- download or generate ./checkpoints/ditto_trt_blackwell/
+- pip install imageio==2.37.2
+- pip install scikit_image==0.25.2
+- 
+
+<hr/>
+<hr/>
+<hr/>
+
 <h2 align='center'>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</h2>
 
 <div align='center'>
