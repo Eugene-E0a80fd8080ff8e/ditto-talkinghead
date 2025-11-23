@@ -22,6 +22,7 @@ class VideoWriterByImageIO:
             ffmpeg_params=ffmpeg_params,
             pixelformat=pixelformat,
             macro_block_size=macro_block_size,
+            format=".mp4"   # https://imageio.readthedocs.io/en/stable/formats/index.html
         )
         self.writer = writer
 
