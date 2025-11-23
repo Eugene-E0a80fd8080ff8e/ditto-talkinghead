@@ -2,8 +2,6 @@ import threading
 import queue
 import numpy as np
 import traceback
-import time
-import logging
 from tqdm import tqdm
 
 from core.atomic_components.avatar_registrar import AvatarRegistrar, smooth_x_s_info_lst
@@ -217,25 +215,6 @@ class StreamSDK:
 
         self.worker_exception = None
         self.stop_event = threading.Event()
-        
-        # Setup debugging logging
-        self.debug_mode = kwargs.get("debug_mode", True)
-        if self.debug_mode:
-            logging.basicConfig(
-                level=logging.DEBUG,
-                format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
-                handlers=[
-                    logging.FileHandler('queue_debug.log'),
-                    logging.StreamHandler()
-                ]
-            )
-            self.logger = logging.getLogger(__name__)
-            self.logger.info("Queue debugging enabled")
-        
-        # Queue monitoring setup
-        self.queues = {}
-        self.queue_stats = {}
-        self.last_activity = {}
 
         self.audio2motion_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.motion_stitch_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
@@ -243,25 +222,6 @@ class StreamSDK:
         self.decode_f3d_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.putback_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.writer_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
-        
-        # Initialize queue monitoring
-        self.queues['audio2motion'] = self.audio2motion_queue
-        self.queues['motion_stitch'] = self.motion_stitch_queue
-        self.queues['warp_f3d'] = self.warp_f3d_queue
-        self.queues['decode_f3d'] = self.decode_f3d_queue
-        self.queues['putback'] = self.putback_queue
-        self.queues['writer'] = self.writer_queue
-        
-        for queue_name in self.queues:
-            self.queue_stats[queue_name] = {
-                'puts': 0,
-                'gets': 0,
-                'timeouts': 0,
-                'full_errors': 0,
-                'last_put_time': 0,
-                'last_get_time': 0
-            }
-            self.last_activity[queue_name] = time.time()
 
         self.thread_list = [
             threading.Thread(target=self.audio2motion_worker),
@@ -271,12 +231,6 @@ class StreamSDK:
             threading.Thread(target=self.putback_worker),
             threading.Thread(target=self.writer_worker),
         ]
-
-        # Start queue monitoring thread if debug mode is enabled
-        if self.debug_mode:
-            self.monitor_thread = threading.Thread(target=self.queue_monitor_worker, daemon=True)
-            self.monitor_thread.start()
-            self.logger.info("Queue monitoring thread started")
 
         for thread in self.thread_list:
             thread.start()
@@ -290,108 +244,8 @@ class StreamSDK:
             else:
                 return {}
         except Exception as e:
-            if self.debug_mode:
-                self.logger.error(f"Error in _get_ctrl_info: {e}")
             traceback.print_exc()
             return {}
-
-    def queue_monitor_worker(self):
-        """Monitor queue sizes and detect potential bottlenecks"""
-        if not self.debug_mode:
-            return
-            
-        while not self.stop_event.is_set():
-            try:
-                current_time = time.time()
-                stuck_queues = []
-                
-                for queue_name, q in self.queues.items():
-                    size = q.qsize()
-                    stats = self.queue_stats[queue_name]
-                    last_activity = self.last_activity[queue_name]
-                    time_since_activity = current_time - last_activity
-                    
-                    # Check for potential issues
-                    if size == q.maxsize and time_since_activity > 5:  # Queue full and no activity for 5s
-                        stuck_queues.append(f"{queue_name} (FULL, {size}/{q.maxsize}, idle for {time_since_activity:.1f}s)")
-                    elif size > 0 and time_since_activity > 10:  # Items in queue but no activity for 10s
-                        stuck_queues.append(f"{queue_name} (STUCK, {size} items, idle for {time_since_activity:.1f}s)")
-                    elif time_since_activity > 15:  # No activity for 15s
-                        stuck_queues.append(f"{queue_name} (INACTIVE, idle for {time_since_activity:.1f}s)")
-                
-                if stuck_queues:
-                    self.logger.warning(f"Potential queue issues detected: {', '.join(stuck_queues)}")
-                
-                # Log queue stats every 10 seconds
-                if int(current_time) % 10 == 0:
-                    status_str = " | ".join([f"{name}: {q.qsize()}/{q.maxsize}" for name, q in self.queues.items()])
-                    self.logger.info(f"Queue Status - {status_str}")
-                    
-                    # Log detailed stats
-                    for queue_name, stats in self.queue_stats.items():
-                        self.logger.debug(f"{queue_name} stats: {stats}")
-                
-                time.sleep(2)  # Check every 2 seconds
-                
-            except Exception as e:
-                self.logger.error(f"Queue monitor error: {e}")
-                time.sleep(5)
-
-    def log_queue_operation(self, queue_name, operation, item_type="item", timeout=False):
-        """Log queue operations for debugging"""
-        if not self.debug_mode:
-            return
-            
-        current_time = time.time()
-        stats = self.queue_stats[queue_name]
-        
-        if operation == "put":
-            stats['puts'] += 1
-            stats['last_put_time'] = current_time
-        elif operation == "get":
-            stats['gets'] += 1
-            stats['last_get_time'] = current_time
-        elif operation == "timeout":
-            stats['timeouts'] += 1
-        elif operation == "full":
-            stats['full_errors'] += 1
-            
-        self.last_activity[queue_name] = current_time
-        
-        q = self.queues[queue_name]
-        self.logger.debug(f"{queue_name} {operation}: {item_type}, size={q.qsize()}/{q.maxsize}")
-
-    def safe_queue_put(self, queue_name, item, timeout=1):
-        """Safe queue put with logging and error handling"""
-        q = self.queues[queue_name]
-        try:
-            q.put(item, timeout=timeout)
-            self.log_queue_operation(queue_name, "put", type(item).__name__)
-            return True
-        except queue.Full:
-            self.log_queue_operation(queue_name, "full", type(item).__name__)
-            if self.debug_mode:
-                self.logger.warning(f"{queue_name} queue is full, cannot put {type(item).__name__}")
-            return False
-        except Exception as e:
-            if self.debug_mode:
-                self.logger.error(f"Error putting item in {queue_name} queue: {e}")
-            raise
-
-    def safe_queue_get(self, queue_name, timeout=1):
-        """Safe queue get with logging and error handling"""
-        q = self.queues[queue_name]
-        try:
-            item = q.get(timeout=timeout)
-            self.log_queue_operation(queue_name, "get", type(item).__name__ if item else "None")
-            return item
-        except queue.Empty:
-            self.log_queue_operation(queue_name, "timeout")
-            return None
-        except Exception as e:
-            if self.debug_mode:
-                self.logger.error(f"Error getting item from {queue_name} queue: {e}")
-            raise
 
     def writer_worker(self):
         try:
@@ -401,32 +255,17 @@ class StreamSDK:
             self.stop_event.set()
 
     def _writer_worker(self):
-        if self.debug_mode:
-            self.logger.info("Writer worker started")
-        
         while not self.stop_event.is_set():
-            item = self.safe_queue_get('writer', timeout=1)
-            if item is None:
+            try:
+                item = self.writer_queue.get(timeout=1)
+            except queue.Empty:
                 continue
 
-            if item is None:  # Termination signal
-                if self.debug_mode:
-                    self.logger.info("Writer worker received termination signal")
+            if item is None:
                 break
-                
-            try:
-                res_frame_rgb = item
-                self.writer(res_frame_rgb, fmt="rgb")
-                self.writer_pbar.update()
-                if self.debug_mode:
-                    self.logger.debug("Writer processed frame successfully")
-            except Exception as e:
-                if self.debug_mode:
-                    self.logger.error(f"Error in writer processing frame: {e}")
-                raise
-                
-        if self.debug_mode:
-            self.logger.info("Writer worker finished")
+            res_frame_rgb = item
+            self.writer(res_frame_rgb, fmt="rgb")
+            self.writer_pbar.update()
 
     def putback_worker(self):
         try:
@@ -436,35 +275,19 @@ class StreamSDK:
             self.stop_event.set()
 
     def _putback_worker(self):
-        if self.debug_mode:
-            self.logger.info("Putback worker started")
-        
         while not self.stop_event.is_set():
-            item = self.safe_queue_get('putback', timeout=1)
-            if item is None:
-                continue
-                
-            if item is None:  # Termination signal
-                if self.debug_mode:
-                    self.logger.info("Putback worker received termination signal")
-                self.safe_queue_put('writer', None)
-                break
-                
             try:
-                frame_idx, render_img = item
-                frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
-                M_c2o = self.source_info["M_c2o_lst"][frame_idx]
-                res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
-                self.safe_queue_put('writer', res_frame_rgb)
-                if self.debug_mode:
-                    self.logger.debug(f"Putback processed frame {frame_idx}")
-            except Exception as e:
-                if self.debug_mode:
-                    self.logger.error(f"Error in putback processing frame {frame_idx}: {e}")
-                raise
-                
-        if self.debug_mode:
-            self.logger.info("Putback worker finished")
+                item = self.putback_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            if item is None:
+                self.writer_queue.put(None)
+                break
+            frame_idx, render_img = item
+            frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
+            M_c2o = self.source_info["M_c2o_lst"][frame_idx]
+            res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
+            self.writer_queue.put(res_frame_rgb)
 
     def decode_f3d_worker(self):
         try:
@@ -521,33 +344,23 @@ class StreamSDK:
             except queue.Empty:
                 continue
             if item is None:
-                print("_motion_stitch_worker  None")
                 self.warp_f3d_queue.put(None)
                 break
             
-            #print(f"motion_stitch_worker {len(self.motion_stitch_queue)}")
             frame_idx, x_d_info, ctrl_kwargs = item
             x_s_info = self.source_info["x_s_info_lst"][frame_idx]
             x_s, x_d = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
             self.warp_f3d_queue.put([frame_idx, x_s, x_d])
 
     def audio2motion_worker(self):
-        print("audio2motion_worker")
         try:
             # self._audio2motion_worker()
             self._audio2motion_offline()
-            print("audio2motion_worker fin")
         except Exception as e:
-            print("audio2motion_worker ex")
             self.worker_exception = e
             self.stop_event.set()
-        finally:
-            print("audio2motion_worker finally")
-
-        print("audio2motion_worker fin2")
 
     def _audio2motion_offline(self):
-        d = False
 
         while not self.stop_event.is_set():
             try:
@@ -573,45 +386,31 @@ class StreamSDK:
                 if aud_cond.shape[1] < seq_frames:
                     pad = np.stack([aud_cond[:, -1]] * (seq_frames - aud_cond.shape[1]), 1)
                     aud_cond = np.concatenate([aud_cond, pad], 1)
-                if(d): print("dit05")
                 res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)
-                if(d): print("dit06")
                 idx += valid_clip_len
-            print("dit09")
+
             pbar.close()
             res_kp_seq = res_kp_seq[:, :num_frames]
             res_kp_seq = self.audio2motion._smo(res_kp_seq, 0, res_kp_seq.shape[1])
-            if(d): print("dit21")
 
-            if(d): print("dit22")
             x_d_info_list = self.audio2motion.cvt_fmt(res_kp_seq)
-            if(d): print("dit23")
 
             gen_frame_idx = 0
-            for j,x_d_info in enumerate(x_d_info_list):
-                if(d): print(f"dit31 : {j}/{len(x_d_info_list)}")
+            for x_d_info in x_d_info_list:
                 frame_idx = _mirror_index(gen_frame_idx, self.source_info_frames)
-                if(d): print(f"dit32")
                 ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
-                if(d): print(f"dit33")
                 while not self.stop_event.is_set():
-                    if(d): print(f"dit331")
                     try:
                         self.motion_stitch_queue.put([frame_idx, x_d_info, ctrl_kwargs], timeout=1)
-                        if(d): print(f"dit34")
                         break
                     except queue.Full:
-                        if(d): print(f"dit35")
                         continue
-                if(d): print(f"dit36")
                 gen_frame_idx += 1
 
             break
 
-        print("dit91")
         self.motion_stitch_queue.put(None)
-        print("dit92")
 
         
     def _audio2motion_worker(self):
@@ -715,9 +514,7 @@ class StreamSDK:
 
     def close(self):
         # flush frames
-        if self.debug_mode:
-            self.logger.info("Closing pipeline - sending termination signal to audio2motion_queue")
-        self.safe_queue_put('audio2motion', None)
+        self.audio2motion_queue.put(None)
         # Wait for worker threads to finish
         for thread in self.thread_list:
             thread.join()
